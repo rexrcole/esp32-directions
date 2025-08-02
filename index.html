@@ -67,6 +67,7 @@
     #status {
       margin-top: 10px;
       font-weight: bold;
+      white-space: pre-wrap; /* Enables text wrapping */
     }
   </style>
 </head>
@@ -161,7 +162,6 @@
 
           document.getElementById("status").innerText = "Map loaded. Enter locations.";
 
-          // Track live location
           watchId = navigator.geolocation.watchPosition(
             (pos) => {
               const updatedPos = {
@@ -255,18 +255,33 @@
       if (currentStepIndex >= routeSteps.length) return;
 
       const step = routeSteps[currentStepIndex];
+      const stepEnd = step.end_location;
       const distance = google.maps.geometry.spherical.computeDistanceBetween(
         new google.maps.LatLng(myPos.lat, myPos.lng),
-        step.end_location
+        stepEnd
       );
 
       if (distance < 50 && currentStepIndex < routeSteps.length - 1) {
         currentStepIndex++;
       }
 
-      const instructionText = routeSteps[currentStepIndex].instructions.replace(/<[^>]+>/g, "");
-      const roundedDistance = Math.round(distance);
-      const fullMessage = `Next step in ${roundedDistance} meters: ${instructionText}`;
+      const currentInstr = routeSteps[currentStepIndex].instructions.replace(/<[^>]+>/g, "");
+      const currentDist = Math.round(distance);
+
+      const nextStepIndex = currentStepIndex + 1 < routeSteps.length ? currentStepIndex + 1 : null;
+      const nextInstr = nextStepIndex !== null
+        ? routeSteps[nextStepIndex].instructions.replace(/<[^>]+>/g, "")
+        : "You have reached your destination.";
+      const nextDist = nextStepIndex !== null
+        ? Math.round(
+            google.maps.geometry.spherical.computeDistanceBetween(
+              new google.maps.LatLng(myPos.lat, myPos.lng),
+              routeSteps[nextStepIndex].end_location
+            )
+          )
+        : 0;
+
+      const fullMessage = `Now: ${currentInstr} (${currentDist}m)\nNext: ${nextInstr} (${nextDist}m)`;
 
       document.getElementById("status").innerText = fullMessage;
       sendToESP32(fullMessage);
@@ -304,3 +319,4 @@
   ></script>
 </body>
 </html>
+

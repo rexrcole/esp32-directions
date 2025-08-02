@@ -1,0 +1,322 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>ESP32 GPS Directions with Blue Dot</title>
+  <meta charset="utf-8" />
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      margin: 20px;
+    }
+
+    label {
+      font-weight: bold;
+    }
+
+    input {
+      width: 300px;
+      margin-bottom: 8px;
+    }
+
+    button {
+      padding: 12px 20px;
+      font-size: 16px;
+      margin-right: 10px;
+      cursor: pointer;
+      background-color: #4285F4;
+      color: white;
+      border: none;
+      border-radius: 4px;
+    }
+
+    #mainContainer {
+      display: flex;
+      gap: 20px;
+      margin-top: 20px;
+      flex-wrap: wrap;
+    }
+
+    #map {
+      height: 40vh;
+      width: 100%;
+      max-width: 60%;
+      flex-grow: 1;
+      min-width: 300px;
+      border: 1px solid #ccc;
+    }
+
+    #directionsList {
+      max-height: 40vh;
+      overflow-y: auto;
+      border: 1px solid #ccc;
+      padding: 10px;
+      background: #f9f9f9;
+      flex-grow: 1;
+      min-width: 250px;
+    }
+
+    #directionsList ol {
+      padding-left: 20px;
+      margin: 0;
+    }
+
+    #directionsList li {
+      margin-bottom: 8px;
+    }
+
+    #status {
+      margin-top: 10px;
+      font-weight: bold;
+      white-space: pre-wrap; /* Enables text wrapping */
+    }
+  </style>
+</head>
+<body>
+  <h1>Car-Like GPS for ESP32</h1>
+
+  <label for="departure">Departure (leave empty for current location):</label><br />
+  <input id="departure" type="text" placeholder="Enter departure location" size="50" /><br />
+
+  <label for="destination">Destination:</label><br />
+  <input id="destination" type="text" placeholder="Enter destination" size="50" /><br />
+
+  <button onclick="getRoute()">Start Navigation</button>
+  <button onclick="clearRoute()">Clear Route</button>
+
+  <div id="mainContainer">
+    <div id="map"></div>
+
+    <div id="directionsList" style="display:none;">
+      <h2>Directions:</h2>
+      <ol id="stepsList"></ol>
+    </div>
+  </div>
+
+  <div id="status"></div>
+
+  <script>
+    let map, directionsService, directionsRenderer;
+    let routeSteps = [];
+    let currentStepIndex = 0;
+    let esp32IP = "https://esp32-sever.onrender.com/postDirection";
+    let watchId = null;
+    let currentLocationMarker = null;
+
+    let autocompleteDeparture, autocompleteDestination;
+    let selectedDeparture = null;
+    let selectedDestination = null;
+
+    function initMap() {
+      navigator.geolocation.getCurrentPosition(
+        (position) => {
+          const currentPos = {
+            lat: position.coords.latitude,
+            lng: position.coords.longitude,
+          };
+
+          map = new google.maps.Map(document.getElementById("map"), {
+            center: currentPos,
+            zoom: 15,
+          });
+
+          currentLocationMarker = new google.maps.Marker({
+            position: currentPos,
+            map: map,
+            title: "You are here",
+            icon: {
+              path: google.maps.SymbolPath.CIRCLE,
+              scale: 8,
+              fillColor: '#4285F4',
+              fillOpacity: 1,
+              strokeColor: '#ffffff',
+              strokeWeight: 2
+            }
+          });
+
+          directionsService = new google.maps.DirectionsService();
+          directionsRenderer = new google.maps.DirectionsRenderer({ map });
+
+          const departureInput = document.getElementById("departure");
+          autocompleteDeparture = new google.maps.places.Autocomplete(departureInput);
+          autocompleteDeparture.setFields(["formatted_address", "geometry"]);
+          autocompleteDeparture.addListener("place_changed", () => {
+            selectedDeparture = autocompleteDeparture.getPlace();
+            if (!selectedDeparture.geometry) {
+              alert("Please select a departure place from the dropdown.");
+              selectedDeparture = null;
+              departureInput.value = "";
+            }
+          });
+
+          const destinationInput = document.getElementById("destination");
+          autocompleteDestination = new google.maps.places.Autocomplete(destinationInput);
+          autocompleteDestination.setFields(["formatted_address", "geometry"]);
+          autocompleteDestination.addListener("place_changed", () => {
+            selectedDestination = autocompleteDestination.getPlace();
+            if (!selectedDestination.geometry) {
+              alert("Please select a destination place from the dropdown.");
+              selectedDestination = null;
+              destinationInput.value = "";
+            }
+          });
+
+          document.getElementById("status").innerText = "Map loaded. Enter locations.";
+
+          watchId = navigator.geolocation.watchPosition(
+            (pos) => {
+              const updatedPos = {
+                lat: pos.coords.latitude,
+                lng: pos.coords.longitude
+              };
+              currentLocationMarker.setPosition(updatedPos);
+              map.setCenter(updatedPos);
+
+              if (routeSteps.length > 0) {
+                updateStep(updatedPos);
+              }
+            },
+            (err) => console.error("Error watching location:", err),
+            {
+              enableHighAccuracy: true,
+              maximumAge: 0,
+              timeout: 10000,
+            }
+          );
+        },
+        (error) => {
+          alert("Error getting location: " + error.message);
+        }
+      );
+    }
+
+    function getRoute() {
+      if (!selectedDestination) {
+        alert("Please select a destination from the dropdown.");
+        return;
+      }
+
+      navigator.geolocation.getCurrentPosition(
+        (position) => {
+          let originCoordsPromise;
+          if (selectedDeparture && selectedDeparture.geometry) {
+            originCoordsPromise = Promise.resolve({
+              lat: selectedDeparture.geometry.location.lat(),
+              lng: selectedDeparture.geometry.location.lng(),
+            });
+          } else {
+            originCoordsPromise = Promise.resolve({
+              lat: position.coords.latitude,
+              lng: position.coords.longitude,
+            });
+          }
+
+          originCoordsPromise.then((origin) => {
+            directionsService.route(
+              {
+                origin: origin,
+                destination: selectedDestination.formatted_address,
+                travelMode: google.maps.TravelMode.DRIVING,
+              },
+              (result, status) => {
+                if (status === "OK") {
+                  directionsRenderer.setDirections(result);
+                  routeSteps = result.routes[0].legs[0].steps;
+                  currentStepIndex = 0;
+                  displayDirectionsList(routeSteps);
+                  document.getElementById("status").innerText = "Navigation started.";
+                } else {
+                  alert("Directions request failed: " + status);
+                }
+              }
+            );
+          });
+        },
+        (error) => {
+          alert("Error getting location: " + error.message);
+        }
+      );
+    }
+
+    function displayDirectionsList(steps) {
+      const directionsDiv = document.getElementById("directionsList");
+      const stepsList = document.getElementById("stepsList");
+      stepsList.innerHTML = "";
+
+      steps.forEach((step) => {
+        const li = document.createElement("li");
+        li.innerHTML = step.instructions;
+        stepsList.appendChild(li);
+      });
+
+      directionsDiv.style.display = "block";
+    }
+
+    function updateStep(myPos) {
+      if (currentStepIndex >= routeSteps.length) return;
+
+      const step = routeSteps[currentStepIndex];
+      const stepEnd = step.end_location;
+      const distance = google.maps.geometry.spherical.computeDistanceBetween(
+        new google.maps.LatLng(myPos.lat, myPos.lng),
+        stepEnd
+      );
+
+      if (distance < 50 && currentStepIndex < routeSteps.length - 1) {
+        currentStepIndex++;
+      }
+
+      const currentInstr = routeSteps[currentStepIndex].instructions.replace(/<[^>]+>/g, "");
+      const currentDist = Math.round(distance);
+
+      const nextStepIndex = currentStepIndex + 1 < routeSteps.length ? currentStepIndex + 1 : null;
+      const nextInstr = nextStepIndex !== null
+        ? routeSteps[nextStepIndex].instructions.replace(/<[^>]+>/g, "")
+        : "You have reached your destination.";
+      const nextDist = nextStepIndex !== null
+        ? Math.round(
+            google.maps.geometry.spherical.computeDistanceBetween(
+              new google.maps.LatLng(myPos.lat, myPos.lng),
+              routeSteps[nextStepIndex].end_location
+            )
+          )
+        : 0;
+
+      const fullMessage = `Now: ${currentInstr} (${currentDist}m)\nNext: ${nextInstr} (${nextDist}m)`;
+
+      document.getElementById("status").innerText = fullMessage;
+      sendToESP32(fullMessage);
+    }
+
+    function sendToESP32(text) {
+      fetch(esp32IP, {
+        method: "POST",
+        headers: { "Content-Type": "text/plain" },
+        body: text,
+      })
+        .then(() => {
+          console.log("Sent to ESP32:", text);
+        })
+        .catch((err) => {
+          console.error("ESP32 error:", err);
+        });
+    }
+
+    function clearRoute() {
+      directionsRenderer.setDirections({ routes: [] });
+      routeSteps = [];
+      currentStepIndex = 0;
+      document.getElementById("stepsList").innerHTML = "";
+      document.getElementById("directionsList").style.display = "none";
+      document.getElementById("status").innerText = "Route cleared. Waiting for new navigation...";
+      sendToESP32("Waiting for directions...");
+    }
+  </script>
+
+  <script
+    src="https://maps.googleapis.com/maps/api/js?key=AIzaSyAdx4nTqzyGmM6yJeGBeiHoyCsAG-Hc2bM&libraries=geometry,places&callback=initMap&loading=async"
+    async
+    defer
+  ></script>
+</body>
+</html>
+

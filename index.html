@@ -1,7 +1,7 @@
 <!DOCTYPE html>
 <html>
 <head>
-  <title>ESP32 GPS Directions with Departure Option</title>
+  <title>ESP32 GPS Directions with Blue Dot</title>
   <meta charset="utf-8" />
   <style>
     #map { height: 60vh; width: 100%; margin-bottom: 10px; }
@@ -34,6 +34,8 @@
   <input id="destination" type="text" placeholder="Enter destination" size="50" /><br />
 
   <button onclick="getRoute()">Start Navigation</button>
+  <button onclick="clearRoute()">Clear Route</button>
+
   <div id="map"></div>
   <div id="status"></div>
 
@@ -48,6 +50,7 @@
     let currentStepIndex = 0;
     let esp32IP = "https://esp32-sever.onrender.com/postDirection";
     let watchId = null;
+    let currentLocationMarker = null;
 
     let autocompleteDeparture, autocompleteDestination;
     let selectedDeparture = null;
@@ -66,15 +69,23 @@
             zoom: 15,
           });
 
-          new google.maps.Marker({
+          currentLocationMarker = new google.maps.Marker({
             position: currentPos,
             map: map,
+            title: "You are here",
+            icon: {
+              path: google.maps.SymbolPath.CIRCLE,
+              scale: 8,
+              fillColor: '#4285F4',
+              fillOpacity: 1,
+              strokeColor: '#ffffff',
+              strokeWeight: 2
+            }
           });
 
           directionsService = new google.maps.DirectionsService();
           directionsRenderer = new google.maps.DirectionsRenderer({ map });
 
-          // Departure autocomplete
           const departureInput = document.getElementById("departure");
           autocompleteDeparture = new google.maps.places.Autocomplete(departureInput);
           autocompleteDeparture.setFields(["formatted_address", "geometry"]);
@@ -87,7 +98,6 @@
             }
           });
 
-          // Destination autocomplete
           const destinationInput = document.getElementById("destination");
           autocompleteDestination = new google.maps.places.Autocomplete(destinationInput);
           autocompleteDestination.setFields(["formatted_address", "geometry"]);
@@ -101,6 +111,29 @@
           });
 
           document.getElementById("status").innerText = "Map loaded. Enter locations.";
+
+          // Live position tracking (blue dot)
+          watchId = navigator.geolocation.watchPosition(
+            (pos) => {
+              const updatedPos = {
+                lat: pos.coords.latitude,
+                lng: pos.coords.longitude
+              };
+              currentLocationMarker.setPosition(updatedPos);
+              map.setCenter(updatedPos);
+
+              // Send current instruction update if route is active
+              if (routeSteps.length > 0) {
+                updateStep(updatedPos);
+              }
+            },
+            (err) => console.error("Error watching location:", err),
+            {
+              enableHighAccuracy: true,
+              maximumAge: 0,
+              timeout: 10000,
+            }
+          );
         },
         (error) => {
           alert("Error getting location: " + error.message);
@@ -116,7 +149,6 @@
 
       navigator.geolocation.getCurrentPosition(
         (position) => {
-          // Use selected departure if given, else current location
           let originCoordsPromise;
           if (selectedDeparture && selectedDeparture.geometry) {
             originCoordsPromise = Promise.resolve({
@@ -142,32 +174,7 @@
                   directionsRenderer.setDirections(result);
                   routeSteps = result.routes[0].legs[0].steps;
                   currentStepIndex = 0;
-
-                  // Show directions list
                   displayDirectionsList(routeSteps);
-
-                  if (watchId !== null) {
-                    navigator.geolocation.clearWatch(watchId);
-                  }
-
-                  watchId = navigator.geolocation.watchPosition(
-                    (pos) => {
-                      const myPos = {
-                        lat: pos.coords.latitude,
-                        lng: pos.coords.longitude,
-                      };
-                      updateStep(myPos);
-                    },
-                    (error) => {
-                      console.error("Error watching position:", error);
-                    },
-                    {
-                      enableHighAccuracy: true,
-                      maximumAge: 0,
-                      timeout: 10000,
-                    }
-                  );
-
                   document.getElementById("status").innerText = "Navigation started.";
                 } else {
                   alert("Directions request failed: " + status);
@@ -187,7 +194,7 @@
       const stepsList = document.getElementById("stepsList");
       stepsList.innerHTML = "";
 
-      steps.forEach((step, index) => {
+      steps.forEach((step) => {
         const li = document.createElement("li");
         li.innerHTML = step.instructions;
         stepsList.appendChild(li);
@@ -209,7 +216,12 @@
         currentStepIndex++;
       }
 
-      sendToESP32(routeSteps[currentStepIndex].instructions.replace(/<[^>]+>/g, ""));
+      const instructionText = routeSteps[currentStepIndex].instructions.replace(/<[^>]+>/g, "");
+      const roundedDistance = Math.round(distance);
+      const fullMessage = `Next step in ${roundedDistance} meters: ${instructionText}`;
+
+      document.getElementById("status").innerText = fullMessage;
+      sendToESP32(fullMessage);
     }
 
     function sendToESP32(text) {
@@ -225,6 +237,16 @@
           console.error("ESP32 error:", err);
         });
     }
+
+    function clearRoute() {
+      directionsRenderer.setDirections({ routes: [] });
+      routeSteps = [];
+      currentStepIndex = 0;
+      document.getElementById("stepsList").innerHTML = "";
+      document.getElementById("directionsList").style.display = "none";
+      document.getElementById("status").innerText = "Route cleared. Waiting for new navigation...";
+      sendToESP32("Waiting for directions...");
+    }
   </script>
 
   <script
@@ -234,7 +256,3 @@
   ></script>
 </body>
 </html>
-
-
-
-

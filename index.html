@@ -1,0 +1,168 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>ESP32 GPS Directions</title>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      padding: 10px;
+    }
+    #map {
+      height: 300px;
+      width: 100%;
+      margin-bottom: 1em;
+    }
+    select, input, button {
+      margin: 5px 0;
+      padding: 5px;
+      width: 100%;
+    }
+    #directionsList {
+      margin-top: 1em;
+      background: #f0f0f0;
+      padding: 10px;
+      border-radius: 8px;
+    }
+  </style>
+</head>
+<body>
+  <h1>ESP32 GPS Directions</h1>
+
+  <label for="departure">Departure:</label>
+  <input type="text" id="departure" placeholder="Leave blank for current location">
+
+  <label for="destination">Choose Destination:</label>
+  <select id="destination">
+    <option value="">-- Select a Place --</option>
+    <option value="Brisbane QLD">Brisbane</option>
+    <option value="South Bank, QLD">South Bank</option>
+    <option value="QUT Gardens Point">QUT Gardens Point</option>
+    <option value="Suncorp Stadium">Suncorp Stadium</option>
+  </select>
+
+  <button onclick="calculateRoute()">Get Directions</button>
+
+  <div id="map"></div>
+
+  <h3>Turn-by-Turn Directions:</h3>
+  <ul id="directionsList"></ul>
+
+  <script>
+    let map, directionsService, directionsRenderer, currentPosition;
+
+    function initMap() {
+      map = new google.maps.Map(document.getElementById("map"), {
+        zoom: 14,
+        center: { lat: -27.4698, lng: 153.0251 },
+      });
+
+      directionsService = new google.maps.DirectionsService();
+      directionsRenderer = new google.maps.DirectionsRenderer({ map: map });
+
+      // Get current location
+      navigator.geolocation.watchPosition(
+        (pos) => {
+          currentPosition = {
+            lat: pos.coords.latitude,
+            lng: pos.coords.longitude,
+          };
+          map.setCenter(currentPosition);
+          new google.maps.Marker({
+            position: currentPosition,
+            map: map,
+            title: "You are here",
+          });
+        },
+        (err) => {
+          console.error("Geolocation error", err);
+        },
+        {
+          enableHighAccuracy: true,
+          timeout: 10000,
+          maximumAge: 0,
+        }
+      );
+    }
+
+    function calculateRoute() {
+      const destination = document.getElementById("destination").value;
+      const departureInput = document.getElementById("departure").value;
+
+      if (!destination) {
+        alert("Please select a destination.");
+        return;
+      }
+
+      let origin;
+
+      if (departureInput.trim() === "" && currentPosition) {
+        origin = currentPosition;
+      } else if (departureInput.trim() !== "") {
+        origin = departureInput;
+      } else {
+        alert("Getting current location...");
+        return;
+      }
+
+      const request = {
+        origin: origin,
+        destination: destination,
+        travelMode: google.maps.TravelMode.DRIVING,
+      };
+
+      directionsService.route(request, (result, status) => {
+        if (status == "OK") {
+          directionsRenderer.setDirections(result);
+          const steps = result.routes[0].legs[0].steps;
+          showSteps(steps);
+        } else {
+          alert("Could not calculate route: " + status);
+        }
+      });
+    }
+
+    function showSteps(steps) {
+      const list = document.getElementById("directionsList");
+      list.innerHTML = "";
+
+      steps.forEach((step, index) => {
+        const li = document.createElement("li");
+        li.innerHTML = step.instructions;
+        list.appendChild(li);
+
+        // Send step to ESP32 with slight delay
+        setTimeout(() => {
+          const cleanText = step.instructions.replace(/<[^>]*>?/gm, "");
+          sendToESP32(cleanText);
+        }, index * 1500); // delay between each send
+      });
+    }
+
+    function sendToESP32(instruction) {
+      fetch("https://swift-chairs-pull.loca.lt/direction", {
+        method: "POST",
+        mode: "cors",
+        headers: {
+          "Content-Type": "text/plain"
+        },
+        body: instruction
+      }).then(response => {
+        if (!response.ok) {
+          console.error("ESP32 response error:", response.statusText);
+        } else {
+          console.log("Instruction sent:", instruction);
+        }
+      }).catch(err => {
+        console.error("Failed to send to ESP32:", err);
+      });
+    }
+  </script>
+
+  <!-- Google Maps API -->
+  <script async defer
+    src="https://maps.googleapis.com/maps/api/js?key=YOUR_GOOGLE_MAPS_API_KEY&callback=initMap">
+  </script>
+</body>
+</html>
